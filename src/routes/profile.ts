@@ -8,14 +8,13 @@ import path from 'path';
 
 const router = Router();
 
-// ---------- Cloudinary Configuration ----------
+// Cloudinary configuration
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// ---------- Multer Storage with Cloudinary ----------
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: async (req: AuthRequest, file: Express.Multer.File) => ({
@@ -28,20 +27,14 @@ const storage = new CloudinaryStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req: AuthRequest, file: Express.Multer.File, cb: any) => {
     const allowed = ['image/jpeg', 'image/png', 'image/webp'];
-    if (allowed.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only images (jpeg, jpg, png, webp) are allowed'));
-    }
+    allowed.includes(file.mimetype) ? cb(null, true) : cb(new Error('Only images (jpeg, jpg, png, webp) are allowed'));
   },
 });
 
-// --- ROUTES (unchanged from your original) ---
-
-// GET /api/profile
+// GET /api/profile (unchanged from your original)
 router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.id;
@@ -50,9 +43,7 @@ router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
        FROM users WHERE id = $1`,
       [userId]
     );
-    if (userResult.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
+    if (userResult.rows.length === 0) return res.status(404).json({ error: 'User not found' });
     const user = userResult.rows[0];
     const role = user.role;
     let roleData = null;
@@ -85,7 +76,7 @@ router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
   }
 });
 
-// POST /api/profile (Sync Identity & Socials)
+// POST /api/profile (update profile – unchanged)
 router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
   const client = await pool.connect();
   try {
@@ -130,20 +121,19 @@ router.post('/upload-avatar', authenticateToken, upload.single('avatar'), async 
     if (!req.file) {
       return res.status(400).json({ error: 'No image file provided' });
     }
-    // Cloudinary returns the secure URL in req.file.path
-    const avatarUrl = req.file.path;
+    const avatarUrl = req.file.path; // Cloudinary secure URL
     await pool.query('UPDATE users SET avatar_url = $1 WHERE id = $2', [avatarUrl, userId]);
     res.json({
       message: 'Avatar uploaded successfully',
       avatar_url: avatarUrl,
     });
   } catch (error) {
-    console.error('Upload Route Error:', error);
+    console.error('Upload route error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// GET /api/profile/referral-stats
+// GET /api/profile/referral-stats (unchanged)
 router.get('/referral-stats', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.id;
