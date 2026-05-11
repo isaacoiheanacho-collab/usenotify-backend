@@ -182,7 +182,6 @@ router.get('/', authenticateToken, async (req: AuthRequest, res) => {
       [userId]
     );
 
-    // Commission earned from referrals (creator referrer or follower referrer)
     const commissionResult = await pool.query(
       `SELECT COALESCE(SUM(amount_usd), 0) AS total_commission
        FROM transactions
@@ -198,14 +197,13 @@ router.get('/', authenticateToken, async (req: AuthRequest, res) => {
       referrals_this_month: parseInt(referralThisMonth.rows[0].count, 10),
       referrals_today: parseInt(referralToday.rows[0].count, 10),
       last_referred_users: lastReferredUsers.rows,
-      total_points_from_referrals: 0, // not stored separately
+      total_points_from_referrals: 0,
       total_stars_from_referrals: 0,
-      total_commission_earned_usd: totalCommissionUsd,
-      // For backward compatibility
-      creators_referred: creatorsReferred
+      total_commission_earned_usd: totalCommissionUsd
+      // No duplicate property here
     };
 
-    // 9) Follower Engagement Analytics (fix column names)
+    // 9) Follower Engagement Analytics
     let follower_engagement = {};
     if (creatorId) {
       const totalEngagements = await pool.query(
@@ -276,7 +274,6 @@ router.get('/', authenticateToken, async (req: AuthRequest, res) => {
       };
     }
 
-    // 10) Return dashboard data
     res.json({
       user,
       roleData,
