@@ -11,16 +11,13 @@ router.post('/register', async (req: Request, res: Response) => {
   try {
     const { email, password, username, role, referralCode } = req.body;
 
-    // Basic validation
     if (!email || !password || !username || !role) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
-
     if (!['creator', 'follower'].includes(role)) {
       return res.status(400).json({ error: 'Invalid role' });
     }
 
-    // Check if user already exists
     const existingUser = await pool.query(
       'SELECT id FROM users WHERE email = $1 OR username = $2',
       [email, username]
@@ -29,14 +26,11 @@ router.post('/register', async (req: Request, res: Response) => {
       return res.status(409).json({ error: 'Email or username already taken' });
     }
 
-    // Hash password
     const hashedPassword = await hashPassword(password);
-
-    // Generate unique referral code for this user
     const userReferralCode = generateReferralCode();
 
-    // Optional: find referrer
     let referredBy: string | null = null;
+    let referrerRole: string | null = null;
     if (referralCode) {
       const referrerResult = await pool.query(
         'SELECT id, role FROM users WHERE referral_code = $1',
@@ -44,10 +38,10 @@ router.post('/register', async (req: Request, res: Response) => {
       );
       if (referrerResult.rows.length > 0) {
         referredBy = referrerResult.rows[0].id;
+        referrerRole = referrerResult.rows[0].role;
       }
     }
 
-    // Insert user (start a transaction because we may update multiple tables)
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -61,7 +55,6 @@ router.post('/register', async (req: Request, res: Response) => {
 
       const newUser = result.rows[0];
 
-      // If role is creator, create entry in creators table with membership expiry 1 year from now
       if (role === 'creator') {
         const membershipExpiry = new Date();
         membershipExpiry.setFullYear(membershipExpiry.getFullYear() + 1);
@@ -71,8 +64,6 @@ router.post('/register', async (req: Request, res: Response) => {
           [newUser.id, membershipExpiry]
         );
       }
-
-      // If role is follower, create entry in followers table
       if (role === 'follower') {
         await client.query(
           `INSERT INTO followers (user_id)
@@ -81,15 +72,20 @@ router.post('/register', async (req: Request, res: Response) => {
         );
       }
 
-      // Handle referral bonus based on referrer role
-      if (referralCode && referredBy) {
-        const referrerRoleResult = await client.query(
-          'SELECT role FROM users WHERE id = $1',
-          [referredBy]
+      // Handle referral reward
+      if (referralCode && referredBy && referrerRole) {
+        const refereeRole = role;
+
+        // Always insert referral record
+        await client.query(
+          `INSERT INTO referrals (referrer_id, referee_id, referrer_type, referee_type, created_at)
+           VALUES ($1, $2, $3, $4, NOW())`,
+          [referredBy, newUser.id, referrerRole, refereeRole]
         );
-        const referrerRole = referrerRoleResult.rows[0]?.role;
-        if (referrerRole === 'creator') {
-          // Increment creator's referral_count and update queued boosts priority
+
+        // Apply rewards based on referrer and referee roles
+        if (referrerRole === 'creator' && refereeRole === 'follower') {
+          // Creator gets +1 referral count (queue priority)
           await client.query(
             `UPDATE creators
              SET referral_count = referral_count + 1,
@@ -97,36 +93,33 @@ router.post('/register', async (req: Request, res: Response) => {
              WHERE user_id = $1`,
             [referredBy]
           );
-          // Update referral_priority for all queued boosts of this creator
+          // Update queued boosts priority
           await client.query(
             `UPDATE boosts
              SET referral_priority = (SELECT referral_count FROM creators WHERE user_id = $1)
              WHERE creator_id = $1 AND status = 'queued'`,
             [referredBy]
           );
-        } else if (referrerRole === 'follower') {
-          // Add 10 points to follower referrer
+        } 
+        else if (referrerRole === 'follower' && refereeRole === 'follower') {
+          // Award 50 points (not 10)
           await client.query(
             `UPDATE followers
-             SET points = points + 10,
+             SET points = points + 50,
                  updated_at = NOW()
              WHERE user_id = $1`,
             [referredBy]
           );
-          // Recalculate stars based on new points
+          // Recalculate stars: 1 star per 100 points
           await client.query(
             `UPDATE followers
              SET stars = floor(points / 100)::numeric
              WHERE user_id = $1`,
             [referredBy]
           );
-          // Insert referral record with reward claimed (points already given)
-          await client.query(
-            `INSERT INTO referrals (referrer_id, referee_id, referrer_type, reward_claimed, reward_amount, claimed_at)
-             VALUES ($1, $2, 'follower', true, 10, NOW())`,
-            [referredBy, newUser.id]
-          );
         }
+        // For referrer=creator->creator or referrer=follower->creator,
+        // commission will be handled in payment webhook.
       }
 
       await client.query('COMMIT');
