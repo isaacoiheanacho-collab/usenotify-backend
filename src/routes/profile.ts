@@ -19,8 +19,8 @@ const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: async (req: AuthRequest, file: Express.Multer.File) => ({
     folder: 'usenotify/avatars',
-    public_id: `avatar-${req.user?.id}-${Date.now()}`,
-    format: 'jpg',
+    public_id: `avatar-${req.user?.id || 'unknown'}-${Date.now()}`,
+    format: 'auto',
     transformation: [{ width: 400, height: 400, crop: 'fill' }],
   }),
 });
@@ -34,7 +34,7 @@ const upload = multer({
   },
 });
 
-// GET /api/profile (unchanged from your original)
+// GET /api/profile
 router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.id;
@@ -76,7 +76,7 @@ router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
   }
 });
 
-// POST /api/profile (update profile – unchanged)
+// POST /api/profile (update profile)
 router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
   const client = await pool.connect();
   try {
@@ -114,7 +114,7 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
   }
 });
 
-// POST /api/profile/upload-avatar (Cloudinary version)
+// POST /api/profile/upload-avatar (Cloudinary version with detailed error logging)
 router.post('/upload-avatar', authenticateToken, upload.single('avatar'), async (req: any, res: Response) => {
   try {
     const userId = req.user!.id;
@@ -123,17 +123,19 @@ router.post('/upload-avatar', authenticateToken, upload.single('avatar'), async 
     }
     const avatarUrl = req.file.path; // Cloudinary secure URL
     await pool.query('UPDATE users SET avatar_url = $1 WHERE id = $2', [avatarUrl, userId]);
-    res.json({
-      message: 'Avatar uploaded successfully',
-      avatar_url: avatarUrl,
+    res.json({ message: 'Avatar uploaded successfully', avatar_url: avatarUrl });
+  } catch (error: any) {
+    console.error('Upload error details:', error);
+    // Send full error details to the client for debugging
+    res.status(500).json({
+      error: error.message || 'Internal server error',
+      details: error.toString(),
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
-  } catch (error) {
-    console.error('Upload route error:', error);
-    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// GET /api/profile/referral-stats (unchanged)
+// GET /api/profile/referral-stats
 router.get('/referral-stats', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.id;
