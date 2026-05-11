@@ -4,37 +4,45 @@ import pool from '../db';
 import multer from 'multer';
 import { v2 as cloudinary } from 'cloudinary';
 import { CloudinaryStorage } from 'multer-storage-cloudinary';
-import path from 'path';
 
 const router = Router();
 
-// Cloudinary configuration
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
-});
+// Lazy‑initialized multer instance
+let uploadMiddleware: multer.Multer | null = null;
 
-const storage = new CloudinaryStorage({
-  cloudinary: cloudinary,
-  params: async (req: AuthRequest, file: Express.Multer.File) => ({
-    folder: 'usenotify/avatars',
-    public_id: `avatar-${req.user?.id || 'unknown'}-${Date.now()}`,
-    format: 'auto',
-    transformation: [{ width: 400, height: 400, crop: 'fill' }],
-  }),
-});
+function getUploadMiddleware() {
+  if (uploadMiddleware) return uploadMiddleware;
 
-const upload = multer({
-  storage,
-  limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (req: AuthRequest, file: Express.Multer.File, cb: any) => {
-    const allowed = ['image/jpeg', 'image/png', 'image/webp'];
-    allowed.includes(file.mimetype) ? cb(null, true) : cb(new Error('Only images (jpeg, jpg, png, webp) are allowed'));
-  },
-});
+  // Configure Cloudinary only once
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+  });
 
-// GET /api/profile
+  const storage = new CloudinaryStorage({
+    cloudinary: cloudinary,
+    params: async (req: AuthRequest, file: Express.Multer.File) => ({
+      folder: 'usenotify/avatars',
+      public_id: `avatar-${req.user?.id || 'unknown'}-${Date.now()}`,
+      format: 'auto',
+      transformation: [{ width: 400, height: 400, crop: 'fill' }],
+    }),
+  });
+
+  uploadMiddleware = multer({
+    storage,
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (req: AuthRequest, file: Express.Multer.File, cb: any) => {
+      const allowed = ['image/jpeg', 'image/png', 'image/webp'];
+      allowed.includes(file.mimetype) ? cb(null, true) : cb(new Error('Only images (jpeg, jpg, png, webp) are allowed'));
+    },
+  });
+
+  return uploadMiddleware;
+}
+
+// -------------------- GET /api/profile --------------------
 router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.id;
@@ -76,7 +84,7 @@ router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
   }
 });
 
-// POST /api/profile (update profile)
+// -------------------- POST /api/profile (update profile) --------------------
 router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
   const client = await pool.connect();
   try {
@@ -114,28 +122,36 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
   }
 });
 
-// POST /api/profile/upload-avatar (Cloudinary version with detailed error logging)
-router.post('/upload-avatar', authenticateToken, upload.single('avatar'), async (req: any, res: Response) => {
-  try {
-    const userId = req.user!.id;
-    if (!req.file) {
-      return res.status(400).json({ error: 'No image file provided' });
+// -------------------- POST /api/profile/upload-avatar (lazy storage) --------------------
+router.post('/upload-avatar', authenticateToken, async (req: any, res: Response) => {
+  const upload = getUploadMiddleware();
+  upload.single('avatar')(req, res, async (err: any) => {
+    if (err) {
+      console.error('Multer/Cloudinary error:', err);
+      return res.status(500).json({
+        error: err.message || 'Upload failed',
+        details: err.toString(),
+      });
     }
-    const avatarUrl = req.file.path; // Cloudinary secure URL
-    await pool.query('UPDATE users SET avatar_url = $1 WHERE id = $2', [avatarUrl, userId]);
-    res.json({ message: 'Avatar uploaded successfully', avatar_url: avatarUrl });
-  } catch (error: any) {
-    console.error('Upload error details:', error);
-    // Send full error details to the client for debugging
-    res.status(500).json({
-      error: error.message || 'Internal server error',
-      details: error.toString(),
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
-  }
+    try {
+      const userId = req.user!.id;
+      if (!req.file) {
+        return res.status(400).json({ error: 'No image file provided' });
+      }
+      const avatarUrl = req.file.path;
+      await pool.query('UPDATE users SET avatar_url = $1 WHERE id = $2', [avatarUrl, userId]);
+      res.json({ message: 'Avatar uploaded successfully', avatar_url: avatarUrl });
+    } catch (error: any) {
+      console.error('Database update error:', error);
+      res.status(500).json({
+        error: error.message || 'Failed to save avatar URL',
+        details: error.toString(),
+      });
+    }
+  });
 });
 
-// GET /api/profile/referral-stats
+// -------------------- GET /api/profile/referral-stats --------------------
 router.get('/referral-stats', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.id;
