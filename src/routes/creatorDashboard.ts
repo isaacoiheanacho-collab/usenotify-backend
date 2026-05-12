@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { authenticateToken, AuthRequest } from '../middlewares/authMiddleware';
 import pool from '../db';
+import { getCurrencyForCountry } from '../utils/currency';
+import { getExchangeRate } from '../utils/fxService';
 
 const router = Router();
 
@@ -392,20 +394,50 @@ router.get('/reward-analytics', authenticateToken, async (req: AuthRequest, res)
   }
 });
 
-// ========== Claim Rewards Route ==========
+// ========== Claim Rewards Route (with FX and payment details) ==========
 router.post('/claim-rewards', authenticateToken, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id;
-    const { amount, paymentMethod } = req.body;
+    const { amount, paymentMethod, paymentDetails } = req.body;
 
     if (!amount || amount <= 0) {
       return res.status(400).json({ error: 'Invalid amount' });
     }
-    if (!paymentMethod || !['paypal', 'bank', 'crypto'].includes(paymentMethod)) {
+    if (!paymentMethod || !['paypal', 'bank'].includes(paymentMethod)) {
       return res.status(400).json({ error: 'Invalid payment method' });
     }
+    if (!paymentDetails || Object.keys(paymentDetails).length === 0) {
+      return res.status(400).json({ error: 'Payment details are required' });
+    }
 
-    // Get total commission earned (available)
+    // Get user's country and email
+    const userProfile = await pool.query(
+      `SELECT up.country, u.email
+       FROM users u
+       LEFT JOIN user_profiles up ON u.id = up.user_id
+       WHERE u.id = $1`,
+      [userId]
+    );
+    if (userProfile.rows.length === 0) {
+      return res.status(404).json({ error: 'User profile not found' });
+    }
+    const country = userProfile.rows[0].country || 'US';
+    const userEmail = userProfile.rows[0].email;
+
+    // Compute local currency amount using FX utilities
+    const { currency: localCurrency, margin } = getCurrencyForCountry(country);
+    let rate = 1;
+    if (localCurrency !== 'USD') {
+      try {
+        rate = await getExchangeRate('USD', localCurrency);
+      } catch (err) {
+        console.error('FX rate fetch failed:', err);
+        return res.status(500).json({ error: 'Failed to fetch exchange rate' });
+      }
+    }
+    const localAmount = amount * rate * (1 + margin / 100);
+
+    // Calculate available commission (total earned minus already claimed)
     const commissionResult = await pool.query(
       `SELECT COALESCE(SUM(amount_usd), 0) AS total_commission
        FROM transactions
@@ -414,7 +446,6 @@ router.post('/claim-rewards', authenticateToken, async (req: AuthRequest, res) =
     );
     const totalCommission = parseFloat(commissionResult.rows[0].total_commission);
 
-    // Get already claimed amounts from reward_claims (status 'approved' or 'pending')
     const claimedResult = await pool.query(
       `SELECT COALESCE(SUM(amount_usd), 0) AS total_claimed
        FROM reward_claims
@@ -422,24 +453,33 @@ router.post('/claim-rewards', authenticateToken, async (req: AuthRequest, res) =
       [userId]
     );
     const totalClaimed = parseFloat(claimedResult.rows[0].total_claimed);
-
     const available = totalCommission - totalClaimed;
+
     if (amount > available) {
       return res.status(400).json({ error: `Amount exceeds available commission. Available: $${available.toFixed(2)}` });
     }
 
-    // Create reward claim record
-    const result = await pool.query(
+    // Insert claim record
+    const claim = await pool.query(
       `INSERT INTO reward_claims (user_id, amount_usd, stars_requested, status, payment_details, requested_at)
        VALUES ($1, $2, 0, 'pending', $3, NOW())
        RETURNING id, amount_usd, status, requested_at`,
-      [userId, amount, JSON.stringify({ method: paymentMethod, requestedAt: new Date().toISOString() })]
+      [userId, amount, JSON.stringify({
+        method: paymentMethod,
+        details: paymentDetails,
+        localCurrency,
+        localAmount,
+        userEmail,
+        country
+      })]
     );
 
     res.json({
       message: 'Reward claim submitted successfully',
-      claim: result.rows[0],
-      available: available - amount
+      claim: claim.rows[0],
+      available: available - amount,
+      localAmount: parseFloat(localAmount.toFixed(2)),
+      localCurrency,
     });
   } catch (error) {
     console.error(error);
