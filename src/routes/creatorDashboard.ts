@@ -392,4 +392,59 @@ router.get('/reward-analytics', authenticateToken, async (req: AuthRequest, res)
   }
 });
 
+// ========== Claim Rewards Route ==========
+router.post('/claim-rewards', authenticateToken, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id;
+    const { amount, paymentMethod } = req.body;
+
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ error: 'Invalid amount' });
+    }
+    if (!paymentMethod || !['paypal', 'bank', 'crypto'].includes(paymentMethod)) {
+      return res.status(400).json({ error: 'Invalid payment method' });
+    }
+
+    // Get total commission earned (available)
+    const commissionResult = await pool.query(
+      `SELECT COALESCE(SUM(amount_usd), 0) AS total_commission
+       FROM transactions
+       WHERE user_id = $1 AND type = 'referral_commission' AND status = 'success'`,
+      [userId]
+    );
+    const totalCommission = parseFloat(commissionResult.rows[0].total_commission);
+
+    // Get already claimed amounts from reward_claims (status 'approved' or 'pending')
+    const claimedResult = await pool.query(
+      `SELECT COALESCE(SUM(amount_usd), 0) AS total_claimed
+       FROM reward_claims
+       WHERE user_id = $1 AND status IN ('pending', 'approved')`,
+      [userId]
+    );
+    const totalClaimed = parseFloat(claimedResult.rows[0].total_claimed);
+
+    const available = totalCommission - totalClaimed;
+    if (amount > available) {
+      return res.status(400).json({ error: `Amount exceeds available commission. Available: $${available.toFixed(2)}` });
+    }
+
+    // Create reward claim record
+    const result = await pool.query(
+      `INSERT INTO reward_claims (user_id, amount_usd, stars_requested, status, payment_details, requested_at)
+       VALUES ($1, $2, 0, 'pending', $3, NOW())
+       RETURNING id, amount_usd, status, requested_at`,
+      [userId, amount, JSON.stringify({ method: paymentMethod, requestedAt: new Date().toISOString() })]
+    );
+
+    res.json({
+      message: 'Reward claim submitted successfully',
+      claim: result.rows[0],
+      available: available - amount
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 export default router;
