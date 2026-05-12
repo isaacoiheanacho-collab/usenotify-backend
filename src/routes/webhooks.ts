@@ -58,22 +58,17 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
           );
 
           // Handle referral commission
-          // Check if this user was referred
           const referrerResult = await client.query(
-            `SELECT u.referred_by, u.role
-             FROM users u
-             WHERE u.id = $1`,
+            `SELECT referred_by FROM users WHERE id = $1`,
             [userId]
           );
           const referredBy = referrerResult.rows[0]?.referred_by;
           if (referredBy) {
-            // Get the referrer's role
             const referrerRoleResult = await client.query(
               `SELECT role FROM users WHERE id = $1`,
               [referredBy]
             );
             const referrerRole = referrerRoleResult.rows[0]?.role;
-            // Only give commission if referrer is creator or follower (and referee is creator)
             if (referrerRole && (referrerRole === 'creator' || referrerRole === 'follower')) {
               const commission = amountUsd * 0.10; // 10%
               // Update referrals table
@@ -84,11 +79,11 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
                  WHERE referrer_id = $2 AND referee_id = $3`,
                 [commission, referredBy, userId]
               );
-              // Insert transaction for the referrer
+              // Insert transaction for the referrer with metadata
               await client.query(
-                `INSERT INTO transactions (user_id, type, amount_usd, amount_local, currency, fx_rate, margin, gateway, gateway_tx_id, status, completed_at)
-                 VALUES ($1, 'referral_commission', $2, $2, 'usd', 1, 0, 'stripe', $3, 'success', NOW())`,
-                [referredBy, commission, session.id]
+                `INSERT INTO transactions (user_id, type, amount_usd, amount_local, currency, fx_rate, margin, gateway, gateway_tx_id, status, completed_at, metadata)
+                 VALUES ($1, 'referral_commission', $2, $2, 'usd', 1, 0, 'stripe', $3, 'success', NOW(), $4)`,
+                [referredBy, commission, session.id, JSON.stringify({ referee_id: userId })]
               );
               console.log(`Commission ${commission} credited to ${referredBy} for referring ${userId}`);
             }

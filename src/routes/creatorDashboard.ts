@@ -48,14 +48,7 @@ router.get('/', authenticateToken, async (req: AuthRequest, res) => {
     }
 
     // 3) Boost metrics (user's boosts only)
-    let boosts = {
-      active: 0,
-      queued: 0,
-      completed: 0,
-      last_submitted: null,
-      total_engagements: 0
-    };
-
+    let boosts = { active: 0, queued: 0, completed: 0, last_submitted: null, total_engagements: 0 };
     if (creatorId) {
       const boostStatsResult = await pool.query(
         `SELECT 
@@ -64,8 +57,7 @@ router.get('/', authenticateToken, async (req: AuthRequest, res) => {
             COUNT(*) FILTER (WHERE status = 'completed') AS completed,
             MAX(submitted_at) AS last_submitted,
             COALESCE(SUM(engagement_count), 0) AS total_engagements
-         FROM boosts
-         WHERE creator_id = $1`,
+         FROM boosts WHERE creator_id = $1`,
         [creatorId]
       );
       boosts = boostStatsResult.rows[0];
@@ -81,8 +73,7 @@ router.get('/', authenticateToken, async (req: AuthRequest, res) => {
           COALESCE(SUM(stars_requested), 0) AS total_stars_requested,
           COALESCE(SUM(amount_usd) FILTER (WHERE status = 'approved'), 0) AS total_paid_out,
           COALESCE(SUM(amount_usd) FILTER (WHERE status = 'pending'), 0) AS total_pending_value
-       FROM reward_claims
-       WHERE user_id = $1`,
+       FROM reward_claims WHERE user_id = $1`,
       [userId]
     );
     const rewards = rewardsResult.rows[0];
@@ -90,15 +81,11 @@ router.get('/', authenticateToken, async (req: AuthRequest, res) => {
     // 5) Notifications
     const notificationsResult = await pool.query(
       `SELECT id, type, title, body, data, read_at, created_at
-       FROM notifications
-       WHERE user_id = $1
-       ORDER BY created_at DESC LIMIT 20`,
+       FROM notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20`,
       [userId]
     );
     const unreadCountResult = await pool.query(
-      `SELECT COUNT(*) AS unread
-       FROM notifications
-       WHERE user_id = $1 AND read_at IS NULL`,
+      `SELECT COUNT(*) AS unread FROM notifications WHERE user_id = $1 AND read_at IS NULL`,
       [userId]
     );
     const notifications = {
@@ -111,8 +98,7 @@ router.get('/', authenticateToken, async (req: AuthRequest, res) => {
     if (creatorId) {
       const boostsActivity = await pool.query(
         `SELECT id, 'boost' AS type, status, submitted_at AS timestamp
-         FROM boosts WHERE creator_id = $1
-         ORDER BY submitted_at DESC LIMIT 10`,
+         FROM boosts WHERE creator_id = $1 ORDER BY submitted_at DESC LIMIT 10`,
         [creatorId]
       );
       activity.push(...boostsActivity.rows);
@@ -120,18 +106,15 @@ router.get('/', authenticateToken, async (req: AuthRequest, res) => {
     if (creatorId) {
       const engagementsActivity = await pool.query(
         `SELECT e.id, 'engagement' AS type, e.engagement_type AS action, e.created_at AS timestamp
-         FROM engagements e
-         JOIN boosts b ON b.id = e.boost_id
-         WHERE b.creator_id = $1
-         ORDER BY e.created_at DESC LIMIT 10`,
+         FROM engagements e JOIN boosts b ON b.id = e.boost_id
+         WHERE b.creator_id = $1 ORDER BY e.created_at DESC LIMIT 10`,
         [creatorId]
       );
       activity.push(...engagementsActivity.rows);
     }
     const rewardActivity = await pool.query(
       `SELECT id, 'reward_claim' AS type, status, requested_at AS timestamp
-       FROM reward_claims WHERE user_id = $1
-       ORDER BY requested_at DESC LIMIT 1`,
+       FROM reward_claims WHERE user_id = $1 ORDER BY requested_at DESC LIMIT 1`,
       [userId]
     );
     if (rewardActivity.rows.length) activity.push(rewardActivity.rows[0]);
@@ -140,52 +123,43 @@ router.get('/', authenticateToken, async (req: AuthRequest, res) => {
     // 7) Earnings History
     const earningsHistoryResult = await pool.query(
       `SELECT id, amount_usd, stars_requested, status, requested_at, processed_at
-       FROM reward_claims WHERE user_id = $1
-       ORDER BY requested_at DESC LIMIT 20`,
+       FROM reward_claims WHERE user_id = $1 ORDER BY requested_at DESC LIMIT 20`,
       [userId]
     );
     const earnings_history = earningsHistoryResult.rows;
 
-    // 8) Referral Analytics (corrected)
+    // 8) Referral Analytics
     const referralTotals = await pool.query(
       `SELECT 
          COUNT(*) FILTER (WHERE referee_type = 'follower') AS fans,
          COUNT(*) FILTER (WHERE referee_type = 'creator') AS creators
-       FROM referrals
-       WHERE referrer_id = $1`,
+       FROM referrals WHERE referrer_id = $1`,
       [userId]
     );
     const fansReferred = parseInt(referralTotals.rows[0].fans, 10);
     const creatorsReferred = parseInt(referralTotals.rows[0].creators, 10);
 
     const referralThisMonth = await pool.query(
-      `SELECT COUNT(*) AS count
-       FROM referrals
-       WHERE referrer_id = $1
+      `SELECT COUNT(*) AS count FROM referrals WHERE referrer_id = $1
        AND DATE_TRUNC('month', created_at) = DATE_TRUNC('month', NOW())`,
       [userId]
     );
     const referralToday = await pool.query(
-      `SELECT COUNT(*) AS count
-       FROM referrals
-       WHERE referrer_id = $1
+      `SELECT COUNT(*) AS count FROM referrals WHERE referrer_id = $1
        AND DATE(created_at) = CURRENT_DATE`,
       [userId]
     );
 
     const lastReferredUsers = await pool.query(
       `SELECT r.id, u.email, u.username, r.created_at AS referred_at, r.referee_type
-       FROM referrals r
-       JOIN users u ON u.id = r.referee_id
-       WHERE r.referrer_id = $1
-       ORDER BY r.created_at DESC LIMIT 10`,
+       FROM referrals r JOIN users u ON u.id = r.referee_id
+       WHERE r.referrer_id = $1 ORDER BY r.created_at DESC LIMIT 10`,
       [userId]
     );
 
     const commissionResult = await pool.query(
       `SELECT COALESCE(SUM(amount_usd), 0) AS total_commission
-       FROM transactions
-       WHERE user_id = $1 AND type = 'referral_commission' AND status = 'success'`,
+       FROM transactions WHERE user_id = $1 AND type = 'referral_commission' AND status = 'success'`,
       [userId]
     );
     const totalCommissionUsd = parseFloat(commissionResult.rows[0].total_commission);
@@ -206,62 +180,41 @@ router.get('/', authenticateToken, async (req: AuthRequest, res) => {
     let follower_engagement = {};
     if (creatorId) {
       const totalEngagements = await pool.query(
-        `SELECT COUNT(*) AS total
-         FROM engagements e
-         JOIN boosts b ON b.id = e.boost_id
-         WHERE b.creator_id = $1`,
+        `SELECT COUNT(*) AS total FROM engagements e JOIN boosts b ON b.id = e.boost_id WHERE b.creator_id = $1`,
         [creatorId]
       );
       const engagementsToday = await pool.query(
-        `SELECT COUNT(*) AS count
-         FROM engagements e
-         JOIN boosts b ON b.id = e.boost_id
+        `SELECT COUNT(*) AS count FROM engagements e JOIN boosts b ON b.id = e.boost_id
          WHERE b.creator_id = $1 AND DATE(e.created_at) = CURRENT_DATE`,
         [creatorId]
       );
       const engagementsThisWeek = await pool.query(
-        `SELECT COUNT(*) AS count
-         FROM engagements e
-         JOIN boosts b ON b.id = e.boost_id
+        `SELECT COUNT(*) AS count FROM engagements e JOIN boosts b ON b.id = e.boost_id
          WHERE b.creator_id = $1 AND DATE_TRUNC('week', e.created_at) = DATE_TRUNC('week', NOW())`,
         [creatorId]
       );
       const engagementsThisMonth = await pool.query(
-        `SELECT COUNT(*) AS count
-         FROM engagements e
-         JOIN boosts b ON b.id = e.boost_id
+        `SELECT COUNT(*) AS count FROM engagements e JOIN boosts b ON b.id = e.boost_id
          WHERE b.creator_id = $1 AND DATE_TRUNC('month', e.created_at) = DATE_TRUNC('month', NOW())`,
         [creatorId]
       );
       const topBoosts = await pool.query(
-        `SELECT b.id, b.original_url, b.platform,
-                SUM(e.points_earned) AS total_engagement_value,
-                COUNT(e.id) AS engagement_count
-         FROM engagements e
-         JOIN boosts b ON b.id = e.boost_id
-         WHERE b.creator_id = $1
-         GROUP BY b.id
-         ORDER BY engagement_count DESC LIMIT 5`,
+        `SELECT b.id, b.original_url, b.platform, SUM(e.points_earned) AS total_engagement_value, COUNT(e.id) AS engagement_count
+         FROM engagements e JOIN boosts b ON b.id = e.boost_id
+         WHERE b.creator_id = $1 GROUP BY b.id ORDER BY engagement_count DESC LIMIT 5`,
         [creatorId]
       );
       const engagementBreakdown = await pool.query(
-        `SELECT e.engagement_type, COUNT(*) AS count
-         FROM engagements e
-         JOIN boosts b ON b.id = e.boost_id
-         WHERE b.creator_id = $1
-         GROUP BY e.engagement_type`,
+        `SELECT e.engagement_type, COUNT(*) AS count FROM engagements e JOIN boosts b ON b.id = e.boost_id
+         WHERE b.creator_id = $1 GROUP BY e.engagement_type`,
         [creatorId]
       );
       const lastEngagements = await pool.query(
-        `SELECT e.id, e.engagement_type, e.points_earned AS engagement_value,
-                e.created_at, b.original_url, b.platform
-         FROM engagements e
-         JOIN boosts b ON b.id = e.boost_id
-         WHERE b.creator_id = $1
-         ORDER BY e.created_at DESC LIMIT 20`,
+        `SELECT e.id, e.engagement_type, e.points_earned AS engagement_value, e.created_at, b.original_url, b.platform
+         FROM engagements e JOIN boosts b ON b.id = e.boost_id
+         WHERE b.creator_id = $1 ORDER BY e.created_at DESC LIMIT 20`,
         [creatorId]
       );
-
       follower_engagement = {
         total_engagements: parseInt(totalEngagements.rows[0].total, 10),
         engagements_today: parseInt(engagementsToday.rows[0].count, 10),
@@ -273,72 +226,99 @@ router.get('/', authenticateToken, async (req: AuthRequest, res) => {
       };
     }
 
-    // ----- NEW METRICS -----
-    // Global queue count (all creators)
-    const globalQueueResult = await pool.query(
-      `SELECT COUNT(*) AS total FROM boosts WHERE status = 'queued'`
-    );
+    // Global queue count
+    const globalQueueResult = await pool.query(`SELECT COUNT(*) AS total FROM boosts WHERE status = 'queued'`);
     const globalQueueCount = parseInt(globalQueueResult.rows[0].total, 10);
-
-    // User's next boost position and estimated live time
     let boostPosition = null;
     let estimatedLiveTime = null;
     if (creatorId) {
-      // Get user's earliest queued boost (highest priority)
       const userQueuedBoost = await pool.query(
-        `SELECT id, referral_priority, submitted_at
-         FROM boosts WHERE creator_id = $1 AND status = 'queued'
+        `SELECT id, referral_priority, submitted_at FROM boosts WHERE creator_id = $1 AND status = 'queued'
          ORDER BY referral_priority DESC, submitted_at ASC LIMIT 1`,
         [creatorId]
       );
       if (userQueuedBoost.rows.length > 0) {
-        const priority = userQueuedBoost.rows[0].referral_priority;
-        const submittedAt = userQueuedBoost.rows[0].submitted_at;
-        // Count boosts ahead (higher priority or same priority but earlier)
+        const { referral_priority: priority, submitted_at: submittedAt } = userQueuedBoost.rows[0];
         const positionResult = await pool.query(
           `SELECT COUNT(*) AS pos FROM boosts WHERE status = 'queued' AND 
            (referral_priority > $1 OR (referral_priority = $1 AND submitted_at < $2))`,
           [priority, submittedAt]
         );
         boostPosition = parseInt(positionResult.rows[0].pos, 10) + 1;
-        // Estimate time: 500 boosts processed per hour
         const hoursToWait = Math.ceil(boostPosition / 500);
         estimatedLiveTime = new Date(Date.now() + hoursToWait * 60 * 60 * 1000);
       }
     }
 
-    // Platform engagement breakdown (sum of engagement points per platform)
     let platformEngagement = [];
     if (creatorId) {
       const platformEngResult = await pool.query(
         `SELECT b.platform, COALESCE(SUM(e.points_earned), 0) AS engagement_count
-         FROM boosts b
-         LEFT JOIN engagements e ON e.boost_id = b.id
-         WHERE b.creator_id = $1
-         GROUP BY b.platform
-         ORDER BY engagement_count DESC`,
+         FROM boosts b LEFT JOIN engagements e ON e.boost_id = b.id
+         WHERE b.creator_id = $1 GROUP BY b.platform ORDER BY engagement_count DESC`,
         [creatorId]
       );
       platformEngagement = platformEngResult.rows;
     }
 
-    // Return all data
     res.json({
-      user,
-      roleData,
-      boosts,
-      rewards,
-      notifications,
-      activity,
-      earnings_history,
-      referral_analytics,
-      follower_engagement,
-      globalQueueCount,      // total boosts in queue across all creators
-      boostPosition,         // position of user's next boost in the global queue (1-indexed)
-      estimatedLiveTime,     // estimated timestamp when the boost will go live
-      platformEngagement     // engagement summary per platform
+      user, roleData, boosts, rewards, notifications, activity, earnings_history,
+      referral_analytics, follower_engagement, globalQueueCount, boostPosition,
+      estimatedLiveTime, platformEngagement
     });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
+// GET /api/creator/reward-analytics
+router.get('/reward-analytics', authenticateToken, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id;
+
+    // Total commission earned
+    const commissionTotal = await pool.query(
+      `SELECT COALESCE(SUM(amount_usd), 0) AS total
+       FROM transactions
+       WHERE user_id = $1 AND type = 'referral_commission' AND status = 'success'`,
+      [userId]
+    );
+    const totalCommission = parseFloat(commissionTotal.rows[0].total);
+
+    // Count of referred fans and creators
+    const referralCounts = await pool.query(
+      `SELECT 
+         COUNT(*) FILTER (WHERE referee_type = 'follower') AS fans,
+         COUNT(*) FILTER (WHERE referee_type = 'creator') AS creators
+       FROM referrals WHERE referrer_id = $1`,
+      [userId]
+    );
+    const fansReferred = parseInt(referralCounts.rows[0].fans, 10);
+    const creatorsReferred = parseInt(referralCounts.rows[0].creators, 10);
+
+    // Detailed commission history (requires metadata.referee_id in transactions)
+    // If you have updated webhooks to store referee_id in metadata, use this query:
+    const detailedHistory = await pool.query(
+      `SELECT t.id, t.amount_usd, t.created_at, 
+              u.username AS referred_username, u.email AS referred_email
+       FROM transactions t
+       LEFT JOIN users u ON u.id = (t.metadata->>'referee_id')::uuid
+       WHERE t.user_id = $1 AND t.type = 'referral_commission' AND t.status = 'success'
+       ORDER BY t.created_at DESC`,
+      [userId]
+    );
+
+    // Fallback: if no metadata, return empty array with note
+    const hasHistory = detailedHistory.rows.length > 0;
+
+    res.json({
+      total_commission_earned_usd: totalCommission,
+      fans_referred: fansReferred,
+      creators_referred: creatorsReferred,
+      commission_history: hasHistory ? detailedHistory.rows : [],
+      message: hasHistory ? '' : 'Detailed commission history will appear after webhook update (store referee_id in transaction metadata).'
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Internal server error' });

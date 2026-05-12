@@ -51,7 +51,7 @@ export const handlePaystackWebhook = async (req: Request, res: Response) => {
                 [userId, amountUsd, transactionReference]
               );
 
-              // Handle referral commission exactly as in Stripe webhook
+              // Handle referral commission
               const referrerResult = await client.query(
                 `SELECT referred_by FROM users WHERE id = $1`,
                 [userId]
@@ -72,10 +72,11 @@ export const handlePaystackWebhook = async (req: Request, res: Response) => {
                      WHERE referrer_id = $2 AND referee_id = $3`,
                     [commission, referredBy, userId]
                   );
+                  // Insert transaction for the referrer with metadata
                   await client.query(
-                    `INSERT INTO transactions (user_id, type, amount_usd, amount_local, currency, fx_rate, margin, gateway, gateway_tx_id, status, completed_at)
-                     VALUES ($1, 'referral_commission', $2, $2, 'usd', 1, 0, 'paystack', $3, 'success', NOW())`,
-                    [referredBy, commission, transactionReference]
+                    `INSERT INTO transactions (user_id, type, amount_usd, amount_local, currency, fx_rate, margin, gateway, gateway_tx_id, status, completed_at, metadata)
+                     VALUES ($1, 'referral_commission', $2, $2, 'usd', 1, 0, 'paystack', $3, 'success', NOW(), $4)`,
+                    [referredBy, commission, transactionReference, JSON.stringify({ referee_id: userId })]
                   );
                 }
               }
