@@ -68,6 +68,13 @@ router.post('/', authenticateToken, async (req: AuthRequest, res) => {
       [userId, original_url, clean_url, platform, category || null, notes || null, referralPriority]
     );
 
+    // ➕ Increment monthly_boosts_used for the creator
+    await pool.query(
+      `UPDATE creators SET monthly_boosts_used = monthly_boosts_used + 1
+       WHERE user_id = $1`,
+      [userId]
+    );
+
     // Update last_boost_at in creators table
     await pool.query(
       `UPDATE creators SET last_boost_at = NOW() WHERE user_id = $1`,

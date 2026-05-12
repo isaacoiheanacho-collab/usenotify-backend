@@ -30,7 +30,7 @@ router.get('/', authenticateToken, async (req: AuthRequest, res) => {
     if (role === 'creator') {
       const creatorResult = await pool.query(
         `SELECT user_id, membership_status, membership_expiry, monthly_boosts_used, 
-                monthly_boosts_limit, referral_count, total_engagements_received
+                monthly_boosts_limit, referral_count, total_engagements_received, last_boost_at
          FROM creators WHERE user_id = $1`,
         [userId]
       );
@@ -47,7 +47,7 @@ router.get('/', authenticateToken, async (req: AuthRequest, res) => {
       if (followerResult.rows.length > 0) roleData = followerResult.rows[0];
     }
 
-    // 3) Boost metrics
+    // 3) Boost metrics (user's boosts only)
     let boosts = {
       active: 0,
       queued: 0,
@@ -200,7 +200,6 @@ router.get('/', authenticateToken, async (req: AuthRequest, res) => {
       total_points_from_referrals: 0,
       total_stars_from_referrals: 0,
       total_commission_earned_usd: totalCommissionUsd
-      // No duplicate property here
     };
 
     // 9) Follower Engagement Analytics
@@ -274,6 +273,56 @@ router.get('/', authenticateToken, async (req: AuthRequest, res) => {
       };
     }
 
+    // ----- NEW METRICS -----
+    // Global queue count (all creators)
+    const globalQueueResult = await pool.query(
+      `SELECT COUNT(*) AS total FROM boosts WHERE status = 'queued'`
+    );
+    const globalQueueCount = parseInt(globalQueueResult.rows[0].total, 10);
+
+    // User's next boost position and estimated live time
+    let boostPosition = null;
+    let estimatedLiveTime = null;
+    if (creatorId) {
+      // Get user's earliest queued boost (highest priority)
+      const userQueuedBoost = await pool.query(
+        `SELECT id, referral_priority, submitted_at
+         FROM boosts WHERE creator_id = $1 AND status = 'queued'
+         ORDER BY referral_priority DESC, submitted_at ASC LIMIT 1`,
+        [creatorId]
+      );
+      if (userQueuedBoost.rows.length > 0) {
+        const priority = userQueuedBoost.rows[0].referral_priority;
+        const submittedAt = userQueuedBoost.rows[0].submitted_at;
+        // Count boosts ahead (higher priority or same priority but earlier)
+        const positionResult = await pool.query(
+          `SELECT COUNT(*) AS pos FROM boosts WHERE status = 'queued' AND 
+           (referral_priority > $1 OR (referral_priority = $1 AND submitted_at < $2))`,
+          [priority, submittedAt]
+        );
+        boostPosition = parseInt(positionResult.rows[0].pos, 10) + 1;
+        // Estimate time: 500 boosts processed per hour
+        const hoursToWait = Math.ceil(boostPosition / 500);
+        estimatedLiveTime = new Date(Date.now() + hoursToWait * 60 * 60 * 1000);
+      }
+    }
+
+    // Platform engagement breakdown (sum of engagement points per platform)
+    let platformEngagement = [];
+    if (creatorId) {
+      const platformEngResult = await pool.query(
+        `SELECT b.platform, COALESCE(SUM(e.points_earned), 0) AS engagement_count
+         FROM boosts b
+         LEFT JOIN engagements e ON e.boost_id = b.id
+         WHERE b.creator_id = $1
+         GROUP BY b.platform
+         ORDER BY engagement_count DESC`,
+        [creatorId]
+      );
+      platformEngagement = platformEngResult.rows;
+    }
+
+    // Return all data
     res.json({
       user,
       roleData,
@@ -283,7 +332,11 @@ router.get('/', authenticateToken, async (req: AuthRequest, res) => {
       activity,
       earnings_history,
       referral_analytics,
-      follower_engagement
+      follower_engagement,
+      globalQueueCount,      // total boosts in queue across all creators
+      boostPosition,         // position of user's next boost in the global queue (1-indexed)
+      estimatedLiveTime,     // estimated timestamp when the boost will go live
+      platformEngagement     // engagement summary per platform
     });
 
   } catch (error) {
