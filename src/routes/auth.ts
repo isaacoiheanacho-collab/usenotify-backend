@@ -9,7 +9,7 @@ const router = Router();
 // POST /api/auth/register
 router.post('/register', async (req: Request, res: Response) => {
   try {
-    const { email, password, username, role, referralCode } = req.body;
+    const { email, password, username, role, referralCode, country } = req.body;
 
     if (!email || !password || !username || !role) {
       return res.status(400).json({ error: 'Missing required fields' });
@@ -55,7 +55,7 @@ router.post('/register', async (req: Request, res: Response) => {
 
       const newUser = result.rows[0];
 
-      // ✅ CREATOR: pending membership, no expiry, 0/30 boosts
+      // Creator: pending membership, no expiry, 0/30 boosts
       if (role === 'creator') {
         await client.query(
           `INSERT INTO creators (user_id, membership_status, membership_expiry, monthly_boosts_used, monthly_boosts_limit)
@@ -63,11 +63,22 @@ router.post('/register', async (req: Request, res: Response) => {
           [newUser.id]
         );
       }
+      // Follower: create entry
       if (role === 'follower') {
         await client.query(
           `INSERT INTO followers (user_id)
            VALUES ($1)`,
           [newUser.id]
+        );
+      }
+
+      // Store country in user_profiles if provided
+      if (country) {
+        await client.query(
+          `INSERT INTO user_profiles (user_id, country)
+           VALUES ($1, $2)
+           ON CONFLICT (user_id) DO UPDATE SET country = EXCLUDED.country`,
+          [newUser.id, country]
         );
       }
 
