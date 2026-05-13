@@ -11,7 +11,6 @@ router.post('/', authenticateToken, async (req: AuthRequest, res) => {
     const userId = req.user!.id;
     const { original_url, platform, category, notes } = req.body;
 
-    // Basic validation
     if (!original_url || !platform) {
       return res.status(400).json({ error: 'original_url and platform are required' });
     }
@@ -31,17 +30,23 @@ router.post('/', authenticateToken, async (req: AuthRequest, res) => {
     if (creatorCheck.rows.length === 0) {
       return res.status(403).json({ error: 'Creator profile not found' });
     }
+
     const creator = creatorCheck.rows[0];
+    // Membership must be active
     if (creator.membership_status !== 'active') {
-      return res.status(403).json({ error: 'Membership is not active' });
+      return res.status(403).json({ error: 'Membership is not active. Please complete payment.' });
     }
     const now = new Date();
+    // membership_expiry must not be null and must be in the future
+    if (!creator.membership_expiry) {
+      return res.status(403).json({ error: 'Membership has not been activated. Please complete payment.' });
+    }
     const expiry = new Date(creator.membership_expiry);
     if (expiry < now) {
-      return res.status(403).json({ error: 'Membership has expired' });
+      return res.status(403).json({ error: 'Membership has expired. Please renew.' });
     }
 
-    // 3. Daily limit check: last boost must be more than 24 hours ago
+    // 3. Daily limit check
     if (creator.last_boost_at) {
       const lastBoost = new Date(creator.last_boost_at);
       const hoursSinceLastBoost = (now.getTime() - lastBoost.getTime()) / (1000 * 60 * 60);
@@ -68,10 +73,9 @@ router.post('/', authenticateToken, async (req: AuthRequest, res) => {
       [userId, original_url, clean_url, platform, category || null, notes || null, referralPriority]
     );
 
-    // ➕ Increment monthly_boosts_used for the creator
+    // Increment monthly_boosts_used for the creator
     await pool.query(
-      `UPDATE creators SET monthly_boosts_used = monthly_boosts_used + 1
-       WHERE user_id = $1`,
+      `UPDATE creators SET monthly_boosts_used = monthly_boosts_used + 1 WHERE user_id = $1`,
       [userId]
     );
 

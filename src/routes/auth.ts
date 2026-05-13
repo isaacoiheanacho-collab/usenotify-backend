@@ -55,13 +55,12 @@ router.post('/register', async (req: Request, res: Response) => {
 
       const newUser = result.rows[0];
 
+      // ✅ CREATOR: pending membership, no expiry, 0/30 boosts
       if (role === 'creator') {
-        const membershipExpiry = new Date();
-        membershipExpiry.setFullYear(membershipExpiry.getFullYear() + 1);
         await client.query(
-          `INSERT INTO creators (user_id, membership_expiry)
-           VALUES ($1, $2)`,
-          [newUser.id, membershipExpiry]
+          `INSERT INTO creators (user_id, membership_status, membership_expiry, monthly_boosts_used, monthly_boosts_limit)
+           VALUES ($1, 'pending', NULL, 0, 30)`,
+          [newUser.id]
         );
       }
       if (role === 'follower') {
@@ -76,50 +75,37 @@ router.post('/register', async (req: Request, res: Response) => {
       if (referralCode && referredBy && referrerRole) {
         const refereeRole = role;
 
-        // Always insert referral record
         await client.query(
           `INSERT INTO referrals (referrer_id, referee_id, referrer_type, referee_type, created_at)
            VALUES ($1, $2, $3, $4, NOW())`,
           [referredBy, newUser.id, referrerRole, refereeRole]
         );
 
-        // Apply rewards based on referrer and referee roles
         if (referrerRole === 'creator' && refereeRole === 'follower') {
-          // Creator gets +1 referral count (queue priority)
           await client.query(
-            `UPDATE creators
-             SET referral_count = referral_count + 1,
-                 updated_at = NOW()
+            `UPDATE creators SET referral_count = referral_count + 1, updated_at = NOW()
              WHERE user_id = $1`,
             [referredBy]
           );
-          // Update queued boosts priority
           await client.query(
-            `UPDATE boosts
-             SET referral_priority = (SELECT referral_count FROM creators WHERE user_id = $1)
+            `UPDATE boosts SET referral_priority = (SELECT referral_count FROM creators WHERE user_id = $1)
              WHERE creator_id = $1 AND status = 'queued'`,
             [referredBy]
           );
         } 
         else if (referrerRole === 'follower' && refereeRole === 'follower') {
-          // Award 50 points (not 10)
           await client.query(
-            `UPDATE followers
-             SET points = points + 50,
-                 updated_at = NOW()
+            `UPDATE followers SET points = points + 50, updated_at = NOW()
              WHERE user_id = $1`,
             [referredBy]
           );
-          // Recalculate stars: 1 star per 100 points
           await client.query(
-            `UPDATE followers
-             SET stars = floor(points / 100)::numeric
+            `UPDATE followers SET stars = floor(points / 100)::numeric
              WHERE user_id = $1`,
             [referredBy]
           );
         }
-        // For referrer=creator->creator or referrer=follower->creator,
-        // commission will be handled in payment webhook.
+        // For referrer=creator->creator or referrer=follower->creator, commission handled in payment webhook.
       }
 
       await client.query('COMMIT');
