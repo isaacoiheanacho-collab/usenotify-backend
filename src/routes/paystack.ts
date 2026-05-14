@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { authenticateToken, AuthRequest } from '../middlewares/authMiddleware';
 import axios from 'axios';
 import pool from '../db';
+import { getCurrencyForCountry } from '../utils/currency';
+import { getExchangeRate } from '../utils/fxService';
 
 const router = Router();
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
@@ -23,7 +25,7 @@ router.post('/initialize', authenticateToken, async (req: AuthRequest, res) => {
     const { role, country } = userResult.rows[0];
     if (role !== 'creator') return res.status(403).json({ error: 'Only creators can purchase membership' });
 
-    // Determine if Africa (simplified list)
+    // Determine region and price (USD)
     const africaCountries = ['NG', 'ZA', 'KE', 'GH', 'EG', 'MA', 'TN', 'DZ', 'AO', 'CM', 'CI', 'ET', 'TZ', 'UG', 'ZM', 'ZW', 'SN', 'ML', 'BF', 'BJ', 'RW'];
     const isAfrica = africaCountries.includes(country);
     if (!isAfrica) {
@@ -31,7 +33,23 @@ router.post('/initialize', authenticateToken, async (req: AuthRequest, res) => {
     }
 
     const amountUsd = 50; // Africa pricing: $50
-    const amountLocal = amountUsd * 1500; // rough NGN conversion; actual will be via FX later
+
+    // Get local currency and margin
+    const { currency: localCurrency, margin } = getCurrencyForCountry(country);
+    let rate = 1;
+    if (localCurrency !== 'USD') {
+      try {
+        rate = await getExchangeRate('USD', localCurrency);
+      } catch (err) {
+        console.error('FX rate fetch failed:', err);
+        return res.status(500).json({ error: 'Failed to fetch exchange rate' });
+      }
+    }
+    const localAmount = amountUsd * rate * (1 + margin / 100);
+    // Paystack expects amount in kobo (smallest currency unit) for NGN (1 NGN = 100 kobo)
+    // For other African currencies, adjust accordingly.
+    const amountInSmallestUnit = Math.round(localAmount * (localCurrency === 'NGN' ? 100 : 1));
+
     const email = req.user!.email;
 
     // Initialize Paystack transaction
@@ -39,14 +57,16 @@ router.post('/initialize', authenticateToken, async (req: AuthRequest, res) => {
       'https://api.paystack.co/transaction/initialize',
       {
         email,
-        amount: amountLocal * 100, // in kobo
-        currency: 'NGN', // temporary; we'll derive from country later
+        amount: amountInSmallestUnit,
+        currency: localCurrency,
         callback_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/payment-success`,
         metadata: {
           userId,
           type: 'yearly_membership',
           amountUsd,
           country,
+          localAmount: parseFloat(localAmount.toFixed(2)),
+          localCurrency,
         },
       },
       {
