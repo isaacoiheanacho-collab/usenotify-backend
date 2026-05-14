@@ -15,7 +15,7 @@ export const handlePaystackWebhook = async (req: Request, res: Response) => {
 
   if (event.event === 'charge.success') {
     const transactionReference = event.data.reference;
-    const metadata = event.data.metadata; // contains userId, amountUsd, type
+    const metadata = event.data.metadata; // contains userId, amountUsd, type, country
 
     if (metadata?.userId && metadata?.amountUsd) {
       const userId = metadata.userId;
@@ -23,6 +23,7 @@ export const handlePaystackWebhook = async (req: Request, res: Response) => {
       const type = metadata.type; // 'yearly_membership' or 'maintenance'
 
       try {
+        // Verify the transaction with Paystack
         const verifyRes = await axios.get(
           `https://api.paystack.co/transaction/verify/${transactionReference}`,
           { headers: { Authorization: `Bearer ${secretKey}` } }
@@ -45,10 +46,15 @@ export const handlePaystackWebhook = async (req: Request, res: Response) => {
                 [membershipExpiry, userId]
               );
 
+              // Extract local payment details
+              const amountPaid = verifyRes.data.data.amount / 100; // amount in kobo -> NGN
+              const currency = verifyRes.data.data.currency;
+              const fxRate = amountPaid / amountUsd;
+
               await client.query(
                 `INSERT INTO transactions (user_id, type, amount_usd, amount_local, currency, fx_rate, margin, gateway, gateway_tx_id, status, completed_at)
-                 VALUES ($1, 'membership', $2, $2, 'usd', 1, 0, 'paystack', $3, 'success', NOW())`,
-                [userId, amountUsd, transactionReference]
+                 VALUES ($1, 'membership', $2, $3, $4, $5, 0, 'paystack', $6, 'success', NOW())`,
+                [userId, amountUsd, amountPaid, currency, fxRate, transactionReference]
               );
 
               // Handle referral commission
@@ -64,7 +70,8 @@ export const handlePaystackWebhook = async (req: Request, res: Response) => {
                 );
                 const referrerRole = referrerRoleResult.rows[0]?.role;
                 if (referrerRole && (referrerRole === 'creator' || referrerRole === 'follower')) {
-                  const commission = amountUsd * 0.10;
+                  const commission = amountUsd * 0.10; // 10%
+                  // Update referrals table
                   await client.query(
                     `UPDATE referrals
                      SET commission_earned = commission_earned + $1,
@@ -72,7 +79,7 @@ export const handlePaystackWebhook = async (req: Request, res: Response) => {
                      WHERE referrer_id = $2 AND referee_id = $3`,
                     [commission, referredBy, userId]
                   );
-                  // Insert transaction for the referrer with metadata
+                  // Insert commission transaction with metadata
                   await client.query(
                     `INSERT INTO transactions (user_id, type, amount_usd, amount_local, currency, fx_rate, margin, gateway, gateway_tx_id, status, completed_at, metadata)
                      VALUES ($1, 'referral_commission', $2, $2, 'usd', 1, 0, 'paystack', $3, 'success', NOW(), $4)`,
@@ -93,6 +100,7 @@ export const handlePaystackWebhook = async (req: Request, res: Response) => {
                 `UPDATE creators SET membership_status = 'active' WHERE user_id = $1 AND membership_status = 'suspended'`,
                 [userId]
               );
+              // Optional: record maintenance transaction
               await client.query(
                 `INSERT INTO transactions (user_id, type, amount_usd, amount_local, currency, fx_rate, margin, gateway, gateway_tx_id, status, completed_at)
                  VALUES ($1, 'maintenance', $2, $2, 'usd', 1, 0, 'paystack', $3, 'success', NOW())`,
