@@ -2,7 +2,7 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
-import cookieParser from 'cookie-parser';
+import cookieParser from 'cookieParser';
 import dotenv from 'dotenv';
 import cron from 'node-cron';
 import path from 'path';
@@ -48,7 +48,24 @@ app.post('/api/webhooks/paystack', express.raw({ type: 'application/json' }), (r
 app.use(helmet({
   crossOriginResourcePolicy: false, // Required to allow images to load from your own server
 }));
-app.use(cors({ origin: process.env.FRONTEND_URL || 'http://localhost:3000', credentials: true }));
+
+// ✅ CORS: allow both localhost and the Netlify domain (and optionally the Render backend itself)
+const allowedOrigins = [
+  'http://localhost:3000',
+  'https://usenotify-f74d53.netlify.app'
+];
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl) – remove if not needed
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true
+}));
+
 app.use(morgan('dev'));
 app.use(express.json());
 app.use(cookieParser());
